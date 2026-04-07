@@ -92,7 +92,7 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
 
 .dark {
@@ -136,4 +136,29 @@ body {
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* VitalFlow custom tokens */
+:root {
+  --vf-blue: #007AFF;
+  --vf-green: #34C759;
+  --vf-red: #FF3B30;
+  --vf-orange: #FF9500;
+  --vf-purple: #AF52DE;
+  --vf-pink: #FF2D55;
+  --vf-teal: #5AC8FA;
+  --vf-indigo: #5856D6;
+
+  /* Cycle phase colors */
+  --cycle-menstrual: #FF3B30;
+  --cycle-follicular: #34C759;
+  --cycle-ovulation: #FF9500;
+  --cycle-luteal: #AF52DE;
+
+  /* Mood scale */
+  --mood-1: #FF3B30;
+  --mood-2: #FF9500;
+  --mood-3: #FFCC00;
+  --mood-4: #34C759;
+  --mood-5: #007AFF;
 }
