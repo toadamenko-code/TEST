@@ -85,7 +85,67 @@ This week, with your period due in 18 days, you have a window to build momentum.
 
 export default function InsightsPage() {
   const [aiExpanded, setAiExpanded] = useState(false)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiAnalysis, setAiAnalysis] = useState<string | null>(null)
+  const [aiError, setAiError] = useState(false)
+  const [mealPlan, setMealPlan] = useState(MEAL_PLAN)
+  const [mealPlanLoading, setMealPlanLoading] = useState(false)
   const [mealPlanKey, setMealPlanKey] = useState(0)
+
+  const fetchAnalysis = async () => {
+    if (aiAnalysis) return // already loaded
+    setAiLoading(true)
+    setAiError(false)
+    try {
+      const res = await fetch('/api/ai/why-do-i-feel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          currentMood: 3,
+          currentEnergy: 6,
+          cyclePhase: 'luteal',
+          cycleDay: 22,
+          last7DaysSleep: [7.5, 6.0, 8.0, 5.5, 7.0, 6.5, 7.0],
+          last7DaysMood: [4, 3, 4, 2, 3, 4, 3],
+          last7DaysSteps: [8200, 4500, 9100, 3200, 7800, 6400, 5100],
+          recentSymptoms: ['bloating', 'fatigue'],
+          recentMeals: ['oatmeal with berries', 'chicken salad', 'pasta with vegetables'],
+        }),
+      })
+      const data = await res.json()
+      setAiAnalysis(data.analysis)
+    } catch {
+      setAiError(true)
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
+  const regenerateMealPlan = async () => {
+    setMealPlanLoading(true)
+    try {
+      const res = await fetch('/api/ai/meal-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cyclePhase: 'follicular',
+          cycleDay: 10,
+          dietaryPreferences: [],
+          healthGoals: ['energy', 'cycle-regularity'],
+          daysCount: 5,
+        }),
+      })
+      const data = await res.json()
+      if (data.days?.length) {
+        setMealPlan(data.days)
+        setMealPlanKey(k => k + 1)
+      }
+    } catch {
+      // keep existing plan on error
+    } finally {
+      setMealPlanLoading(false)
+    }
+  }
 
   return (
     <div className="px-4 pt-6 pb-6 space-y-4">
@@ -101,7 +161,10 @@ export default function InsightsPage() {
       <div className="rounded-2xl bg-gradient-to-br from-[var(--vf-blue)]/10 to-[var(--vf-purple)]/10 border border-[var(--vf-blue)]/20 p-4 shadow-sm">
         <button
           className="w-full flex items-center gap-3"
-          onClick={() => setAiExpanded(prev => !prev)}
+          onClick={() => {
+            setAiExpanded(prev => !prev)
+            if (!aiExpanded) fetchAnalysis()
+          }}
         >
           <div className="w-10 h-10 rounded-2xl bg-[var(--vf-blue)]/15 flex items-center justify-center shrink-0">
             <Sparkles className="w-5 h-5 text-[var(--vf-blue)]" />
@@ -118,14 +181,27 @@ export default function InsightsPage() {
         </button>
 
         {aiExpanded && (
-          <div className="mt-4 space-y-2.5">
-            {AI_RESPONSE.split('\n\n').map((para, i) => (
-              <p key={i} className="text-sm text-foreground/85 leading-relaxed">
-                {para.split('**').map((part, j) =>
-                  j % 2 === 1 ? <strong key={j}>{part}</strong> : part
-                )}
-              </p>
-            ))}
+          <div className="mt-4">
+            {aiLoading && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                Analyzing your week...
+              </div>
+            )}
+            {aiError && (
+              <p className="text-sm text-muted-foreground">Couldn&apos;t load analysis right now — try again.</p>
+            )}
+            {aiAnalysis && (
+              <div className="space-y-2.5">
+                {aiAnalysis.split('\n\n').map((para, i) => (
+                  <p key={i} className="text-sm text-foreground/85 leading-relaxed">
+                    {para.split('**').map((part, j) =>
+                      j % 2 === 1 ? <strong key={j}>{part}</strong> : part
+                    )}
+                  </p>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -191,14 +267,15 @@ export default function InsightsPage() {
             variant="outline"
             size="sm"
             className="rounded-xl h-8 text-xs"
-            onClick={() => setMealPlanKey(k => k + 1)}
+            onClick={regenerateMealPlan}
+            disabled={mealPlanLoading}
           >
-            <RefreshCw className="w-3 h-3 mr-1.5" />
-            Regenerate
+            <RefreshCw className={`w-3 h-3 mr-1.5 ${mealPlanLoading ? 'animate-spin' : ''}`} />
+            {mealPlanLoading ? 'Generating...' : 'Regenerate'}
           </Button>
         </div>
         <div className="space-y-4" key={mealPlanKey}>
-          {MEAL_PLAN.map(day => (
+          {mealPlan.map(day => (
             <div key={day.day} className="border-b border-border/50 last:border-0 pb-3 last:pb-0">
               <p className="text-xs font-bold text-[var(--vf-blue)] mb-2 uppercase tracking-wide">{day.day}</p>
               <div className="space-y-1.5">

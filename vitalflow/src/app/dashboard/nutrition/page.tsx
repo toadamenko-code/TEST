@@ -107,16 +107,29 @@ export default function NutritionPage() {
     setSupplements(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s])
   }
 
-  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
     const url = URL.createObjectURL(file)
     setPhotoPreview(url)
     setAnalyzingPhoto(true)
-    setTimeout(() => {
-      setAnalyzingPhoto(false)
+    try {
+      const formData = new FormData()
+      formData.append('image', file)
+      formData.append('mealType', addMealType)
+      const res = await fetch('/api/ai/analyze-meal', {
+        method: 'POST',
+        body: formData,
+      })
+      if (res.ok) {
+        setAiAnalysisShown(true)
+      }
+    } catch {
+      // show analysis section anyway so user can enter manually
       setAiAnalysisShown(true)
-    }, 1800)
+    } finally {
+      setAnalyzingPhoto(false)
+    }
   }
 
   const saveFood = () => {
