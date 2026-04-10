@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { getCyclePhaseInfo } from '@/lib/health/cycle-tracker'
 import { CyclePhaseCard } from '@/components/dashboard/CyclePhaseCard'
 import { cn } from '@/lib/utils'
@@ -8,10 +8,11 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { Heart, Droplets, Calendar, AlertCircle } from 'lucide-react'
+import { createClient } from '@/lib/supabase/client'
+import { toast } from 'sonner'
 
-const mockLastPeriodStart = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
+const FALLBACK_PERIOD_START = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
 const CYCLE_LENGTH = 28
-const phaseInfo = getCyclePhaseInfo(mockLastPeriodStart, CYCLE_LENGTH)
 
 const FLOW_LEVELS = ['spotting', 'light', 'medium', 'heavy'] as const
 type FlowLevel = typeof FLOW_LEVELS[number]
@@ -72,9 +73,138 @@ export default function CyclePage() {
   const [loggedSymptoms, setLoggedSymptoms] = useState<string[]>([])
   const [periodLogged, setPeriodLogged] = useState(false)
   const [intimacyLogged, setIntimacyLogged] = useState(false)
+  const [lastPeriodStart, setLastPeriodStart] = useState<Date>(FALLBACK_PERIOD_START)
 
-  const toggleSymptom = (s: string) => {
-    setLoggedSymptoms(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s])
+  useEffect(() => {
+    const loadData = async () => {
+      const supabase = createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const thirtyDaysAgo = new Date()
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 60)
+
+      const { data, error } = await supabase
+        .from('cycle_entries')
+        .select('*')
+        .eq('user_id', user.id)
+        .gte('recorded_at', thirtyDaysAgo.toISOString())
+        .order('recorded_at', { ascending: false })
+
+      if (error) {
+        toast.error('Failed to load cycle data')
+        return
+      }
+
+      if (data && data.length > 0) {
+        // Find most recent period_start to determine cycle day
+        const periodEntry = data.find(e => e.entry_type === 'period_start')
+        if (periodEntry) {
+          setLastPeriodStart(new Date(periodEntry.recorded_at))
+        }
+
+        // Check if period/intimacy logged today
+        const today = new Date().toISOString().split('T')[0]
+        const todayPeriod = data.find(e => e.entry_type === 'period_start' && e.recorded_at.startsWith(today))
+        const todayIntimacy = data.find(e => e.entry_type === 'intimacy' && e.recorded_at.startsWith(today))
+        if (todayPeriod) setPeriodLogged(true)
+        if (todayIntimacy) setIntimacyLogged(true)
+      }
+
+      // Load today's symptoms
+      const today = new Date().toISOString().split('T')[0]
+      const { data: symptomData } = await supabase
+        .from('symptom_entries')
+        .select('*')
+        .eq('user_id', user.id)
+        .gte('recorded_at', today)
+        .order('recorded_at', { ascending: false })
+        .limit(1)
+
+      if (symptomData && symptomData.length > 0) {
+        setLoggedSymptoms(symptomData[0].symptoms ?? [])
+      }
+    }
+    loadData()
+  }, [])
+
+  const phaseInfo = getCyclePhaseInfo(lastPeriodStart, CYCLE_LENGTH)
+
+  const toggleSymptom = async (s: string) => {
+    const newSymptoms = loggedSymptoms.includes(s)
+      ? loggedSymptoms.filter(x => x !== s)
+      : [...loggedSymptoms, s]
+
+    setLoggedSymptoms(newSymptoms)
+
+    // Save to Supabase whenever symptoms change
+    const supabase = createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+
+    const { error } = await supabase.from('symptom_entries').insert({
+      user_id: user.id,
+      symptoms: newSymptoms,
+      severity: null,
+      notes: null,
+      recorded_at: new Date().toISOString(),
+    })
+
+    if (error) {
+      toast.error('Failed to save symptoms')
+    }
+  }
+
+  const savePeriod = async () => {
+    const supabase = createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      toast.error('Not logged in')
+      return
+    }
+
+    const { error } = await supabase.from('cycle_entries').insert({
+      user_id: user.id,
+      entry_type: 'period_start',
+      flow_level: flowLevel,
+      notes: periodNotes,
+      recorded_at: new Date().toISOString(),
+    })
+
+    if (error) {
+      toast.error('Failed to save period entry')
+      return
+    }
+
+    toast.success('Period logged!')
+    setPeriodLogged(true)
+    setLastPeriodStart(new Date())
+    setPeriodDialogOpen(false)
+  }
+
+  const saveIntimacy = async () => {
+    const supabase = createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      toast.error('Not logged in')
+      return
+    }
+
+    const { error } = await supabase.from('cycle_entries').insert({
+      user_id: user.id,
+      entry_type: 'intimacy',
+      notes: intimacyNotes,
+      recorded_at: new Date().toISOString(),
+    })
+
+    if (error) {
+      toast.error('Failed to save intimacy entry')
+      return
+    }
+
+    toast.success('Logged!')
+    setIntimacyLogged(true)
+    setIntimacyDialogOpen(false)
   }
 
   return (
@@ -242,7 +372,7 @@ export default function CyclePage() {
             />
             <Button
               className="w-full bg-[var(--vf-red)] hover:bg-[var(--vf-red)]/90 text-white rounded-xl"
-              onClick={() => { setPeriodLogged(true); setPeriodDialogOpen(false) }}
+              onClick={savePeriod}
             >
               Save
             </Button>
@@ -268,7 +398,7 @@ export default function CyclePage() {
             <Button
               className="w-full rounded-xl text-white"
               style={{ backgroundColor: 'var(--vf-pink)' }}
-              onClick={() => { setIntimacyLogged(true); setIntimacyDialogOpen(false) }}
+              onClick={saveIntimacy}
             >
               Save
             </Button>

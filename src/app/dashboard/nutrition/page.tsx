@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -8,6 +8,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Apple, Camera, Plus, Droplets, CheckCircle, Circle } from 'lucide-react'
+import { createClient } from '@/lib/supabase/client'
+import { toast } from 'sonner'
 
 // Macro ring
 function MacroRing({ label, current, goal, color }: { label: string; current: number; goal: number; color: string }) {
@@ -54,6 +56,7 @@ const MEAL_ICONS: Record<MealType, string> = {
 }
 
 interface FoodItem {
+  id?: string
   description: string
   meal_type: MealType
   calories?: number
@@ -61,11 +64,6 @@ interface FoodItem {
   carbs_g?: number
   fat_g?: number
 }
-
-const mockFoodLog: FoodItem[] = [
-  { description: 'Greek yogurt with berries and granola', meal_type: 'breakfast', calories: 320, protein_g: 18, carbs_g: 42, fat_g: 8 },
-  { description: 'Grilled chicken salad with avocado', meal_type: 'lunch', calories: 480, protein_g: 38, carbs_g: 22, fat_g: 24 },
-]
 
 const SUPPLEMENTS = ['Vitamin D', 'Iron', 'Magnesium', 'Omega-3', 'B12']
 
@@ -81,10 +79,10 @@ const mockAIAnalysis = {
 }
 
 export default function NutritionPage() {
-  const [foodLog, setFoodLog] = useState<FoodItem[]>(mockFoodLog)
-  const [waterGlasses, setWaterGlasses] = useState(5)
+  const [foodLog, setFoodLog] = useState<FoodItem[]>([])
+  const [waterGlasses, setWaterGlasses] = useState(0)
   const waterGoal = 8
-  const [supplements, setSupplements] = useState<string[]>(['Vitamin D', 'Iron'])
+  const [supplements, setSupplements] = useState<string[]>([])
   const [addFoodOpen, setAddFoodOpen] = useState(false)
   const [addMealType, setAddMealType] = useState<MealType>('snack')
   const [description, setDescription] = useState('')
@@ -102,6 +100,48 @@ export default function NutritionPage() {
   const todayCarbs = foodLog.reduce((a, f) => a + (f.carbs_g ?? 0), 0)
   const todayFat = foodLog.reduce((a, f) => a + (f.fat_g ?? 0), 0)
   const todayCals = foodLog.reduce((a, f) => a + (f.calories ?? 0), 0)
+
+  useEffect(() => {
+    const loadData = async () => {
+      const supabase = createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const today = new Date().toISOString().split('T')[0]
+
+      const [foodRes, waterRes] = await Promise.all([
+        supabase
+          .from('food_entries')
+          .select('*')
+          .eq('user_id', user.id)
+          .gte('recorded_at', today)
+          .order('recorded_at', { ascending: true }),
+        supabase
+          .from('water_entries')
+          .select('*')
+          .eq('user_id', user.id)
+          .gte('recorded_at', today),
+      ])
+
+      if (foodRes.data) {
+        setFoodLog(foodRes.data.map(f => ({
+          id: f.id,
+          description: f.description,
+          meal_type: f.meal_type as MealType,
+          calories: f.calories ?? undefined,
+          protein_g: f.protein_g ?? undefined,
+          carbs_g: f.carbs_g ?? undefined,
+          fat_g: f.fat_g ?? undefined,
+        })))
+      }
+
+      if (waterRes.data) {
+        const totalMl = waterRes.data.reduce((sum: number, w: { amount_ml: number }) => sum + (w.amount_ml ?? 0), 0)
+        setWaterGlasses(Math.round(totalMl / 250))
+      }
+    }
+    loadData()
+  }, [])
 
   const toggleSupplement = (s: string) => {
     setSupplements(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s])
@@ -132,9 +172,37 @@ export default function NutritionPage() {
     }
   }
 
-  const saveFood = () => {
+  const saveFood = async () => {
     if (!description) return
+
+    const supabase = createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      toast.error('Not logged in')
+      return
+    }
+
+    const entry = {
+      user_id: user.id,
+      description,
+      meal_type: addMealType,
+      calories: calories ? Number(calories) : null,
+      protein_g: protein ? Number(protein) : null,
+      carbs_g: carbs ? Number(carbs) : null,
+      fat_g: fat ? Number(fat) : null,
+      recorded_at: new Date().toISOString(),
+    }
+
+    const { data: inserted, error } = await supabase.from('food_entries').insert(entry).select().single()
+
+    if (error) {
+      toast.error('Failed to save food entry')
+      return
+    }
+
+    toast.success('Food logged!')
     setFoodLog(prev => [...prev, {
+      id: inserted?.id,
       description,
       meal_type: addMealType,
       calories: calories ? Number(calories) : undefined,
@@ -148,6 +216,41 @@ export default function NutritionPage() {
     setProtein('')
     setCarbs('')
     setFat('')
+  }
+
+  const addWaterGlass = async () => {
+    if (waterGlasses >= waterGoal) return
+
+    const supabase = createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      toast.error('Not logged in')
+      return
+    }
+
+    const { error } = await supabase.from('water_entries').insert({
+      user_id: user.id,
+      amount_ml: 250,
+      recorded_at: new Date().toISOString(),
+    })
+
+    if (error) {
+      toast.error('Failed to log water')
+      return
+    }
+
+    setWaterGlasses(prev => Math.min(prev + 1, waterGoal))
+  }
+
+  const handleWaterGlassTap = async (i: number) => {
+    const newCount = i < waterGlasses ? i : i + 1
+    if (newCount > waterGlasses) {
+      // Adding a glass
+      await addWaterGlass()
+    } else {
+      // Just update local (removing glasses isn't persisted)
+      setWaterGlasses(newCount)
+    }
   }
 
   return (
@@ -265,7 +368,7 @@ export default function NutritionPage() {
               ) : (
                 <div className="space-y-1.5 pl-7">
                   {items.map((item, i) => (
-                    <div key={i} className="flex items-center justify-between">
+                    <div key={item.id ?? i} className="flex items-center justify-between">
                       <p className="text-sm text-foreground/80 flex-1 truncate">{item.description}</p>
                       {item.calories && (
                         <span className="text-xs text-muted-foreground ml-2 shrink-0">{item.calories} kcal</span>
@@ -294,7 +397,7 @@ export default function NutritionPage() {
           {Array.from({ length: waterGoal }, (_, i) => (
             <button
               key={i}
-              onClick={() => setWaterGlasses(i < waterGlasses ? i : i + 1)}
+              onClick={() => handleWaterGlassTap(i)}
               className={cn(
                 'flex-1 h-10 rounded-lg transition-all',
                 i < waterGlasses
@@ -309,7 +412,7 @@ export default function NutritionPage() {
           variant="outline"
           size="sm"
           className="w-full rounded-xl border-[var(--color-border)]"
-          onClick={() => setWaterGlasses(prev => Math.min(prev + 1, waterGoal))}
+          onClick={addWaterGlass}
           disabled={waterGlasses >= waterGoal}
         >
           <Plus className="w-3.5 h-3.5 mr-1.5" />

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -9,6 +9,8 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Activity, Upload, Footprints, Flame, MapPin, Plus, Scale, Dumbbell, Bike, PersonStanding, Waves } from 'lucide-react'
+import { createClient } from '@/lib/supabase/client'
+import { toast } from 'sonner'
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const MOCK_WEEKLY_STEPS = [8200, 6500, 9100, 7800, 5200, 10300, 7342]
@@ -29,6 +31,7 @@ const WORKOUT_ICONS: Record<string, React.ReactNode> = {
 }
 
 interface Workout {
+  id?: string
   type: string
   duration: number
   calories: number
@@ -36,11 +39,12 @@ interface Workout {
   notes?: string
 }
 
-const mockWorkouts: Workout[] = [
-  { type: 'Running', duration: 35, calories: 280, date: 'Apr 6' },
-  { type: 'Yoga', duration: 50, calories: 120, date: 'Apr 5' },
-  { type: 'Strength', duration: 45, calories: 220, date: 'Apr 3' },
-]
+interface Measurements {
+  weight_kg?: number
+  waist_cm?: number
+  hips_cm?: number
+  chest_cm?: number
+}
 
 const STEPS_TODAY = 7342
 const STEPS_GOAL = 10000
@@ -50,7 +54,8 @@ const DISTANCE_KM = 5.2
 const UNITS = ['kg', 'lbs'] as const
 
 export default function FitnessPage() {
-  const [workouts, setWorkouts] = useState<Workout[]>(mockWorkouts)
+  const [workouts, setWorkouts] = useState<Workout[]>([])
+  const [latestMeasurements, setLatestMeasurements] = useState<Measurements>({})
   const [workoutDialogOpen, setWorkoutDialogOpen] = useState(false)
   const [weightDialogOpen, setWeightDialogOpen] = useState(false)
   const [weightUnit, setWeightUnit] = useState<'kg' | 'lbs'>('kg')
@@ -70,9 +75,81 @@ export default function FitnessPage() {
 
   const xmlInputRef = useRef<HTMLInputElement>(null)
 
-  const saveWorkout = () => {
+  useEffect(() => {
+    const loadData = async () => {
+      const supabase = createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const sevenDaysAgo = new Date()
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
+
+      const [workoutRes, measurementRes] = await Promise.all([
+        supabase
+          .from('workout_entries')
+          .select('*')
+          .eq('user_id', user.id)
+          .gte('recorded_at', sevenDaysAgo.toISOString())
+          .order('recorded_at', { ascending: false }),
+        supabase
+          .from('measurement_entries')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('recorded_at', { ascending: false })
+          .limit(1),
+      ])
+
+      if (workoutRes.data) {
+        setWorkouts(workoutRes.data.map(w => ({
+          id: w.id,
+          type: w.workout_type,
+          duration: w.duration_minutes,
+          calories: w.calories ?? 0,
+          date: new Date(w.recorded_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+          notes: w.notes ?? undefined,
+        })))
+      }
+
+      if (measurementRes.data && measurementRes.data.length > 0) {
+        const m = measurementRes.data[0]
+        setLatestMeasurements({
+          weight_kg: m.weight_kg ?? undefined,
+          waist_cm: m.waist_cm ?? undefined,
+          hips_cm: m.hips_cm ?? undefined,
+          chest_cm: m.chest_cm ?? undefined,
+        })
+      }
+    }
+    loadData()
+  }, [])
+
+  const saveWorkout = async () => {
     if (!wDuration) return
+
+    const supabase = createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      toast.error('Not logged in')
+      return
+    }
+
+    const { data: inserted, error } = await supabase.from('workout_entries').insert({
+      user_id: user.id,
+      workout_type: wType,
+      duration_minutes: Number(wDuration),
+      calories: wCalories ? Number(wCalories) : null,
+      notes: wNotes || null,
+      recorded_at: new Date().toISOString(),
+    }).select().single()
+
+    if (error) {
+      toast.error('Failed to save workout')
+      return
+    }
+
+    toast.success('Workout logged!')
     setWorkouts(prev => [{
+      id: inserted?.id,
       type: wType,
       duration: Number(wDuration),
       calories: Number(wCalories) || 0,
@@ -85,6 +162,48 @@ export default function FitnessPage() {
     setWNotes('')
   }
 
+  const saveMeasurements = async () => {
+    if (!wWeight) return
+
+    const supabase = createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      toast.error('Not logged in')
+      return
+    }
+
+    const weightKg = weightUnit === 'lbs'
+      ? Number(wWeight) * 0.453592
+      : Number(wWeight)
+
+    const { error } = await supabase.from('measurement_entries').insert({
+      user_id: user.id,
+      weight_kg: weightKg,
+      waist_cm: wWaist ? Number(wWaist) : null,
+      hips_cm: wHips ? Number(wHips) : null,
+      chest_cm: wChest ? Number(wChest) : null,
+      recorded_at: new Date().toISOString(),
+    })
+
+    if (error) {
+      toast.error('Failed to save measurements')
+      return
+    }
+
+    toast.success('Measurements saved!')
+    setLatestMeasurements({
+      weight_kg: weightKg,
+      waist_cm: wWaist ? Number(wWaist) : undefined,
+      hips_cm: wHips ? Number(wHips) : undefined,
+      chest_cm: wChest ? Number(wChest) : undefined,
+    })
+    setWeightDialogOpen(false)
+    setWWeight('')
+    setWWaist('')
+    setWHips('')
+    setWChest('')
+  }
+
   const handleXmlImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.[0]) return
     setImportStatus('processing')
@@ -92,6 +211,16 @@ export default function FitnessPage() {
   }
 
   const stepsProgress = (STEPS_TODAY / STEPS_GOAL) * 100
+
+  const displayWeight = latestMeasurements.weight_kg
+    ? weightUnit === 'lbs'
+      ? (latestMeasurements.weight_kg * 2.20462).toFixed(1)
+      : latestMeasurements.weight_kg.toFixed(1)
+    : '—'
+
+  const bmi = latestMeasurements.weight_kg
+    ? (latestMeasurements.weight_kg / (1.65 * 1.65)).toFixed(1)
+    : '—'
 
   return (
     <div className="px-4 pt-6 pb-6 space-y-4">
@@ -229,18 +358,22 @@ export default function FitnessPage() {
           </Button>
         </div>
         <div className="space-y-2.5">
-          {workouts.slice(0, 3).map((w, i) => (
-            <div key={i} className="flex items-center gap-3 py-2 border-b border-border/40 last:border-0">
-              <div className="w-9 h-9 rounded-xl bg-[var(--vf-green)]/10 flex items-center justify-center text-[var(--vf-green)] shrink-0">
-                {WORKOUT_ICONS[w.type] ?? <Activity className="w-4 h-4" />}
+          {workouts.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2">No workouts logged yet</p>
+          ) : (
+            workouts.slice(0, 3).map((w, i) => (
+              <div key={w.id ?? i} className="flex items-center gap-3 py-2 border-b border-border/40 last:border-0">
+                <div className="w-9 h-9 rounded-xl bg-[var(--vf-green)]/10 flex items-center justify-center text-[var(--vf-green)] shrink-0">
+                  {WORKOUT_ICONS[w.type] ?? <Activity className="w-4 h-4" />}
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm font-medium">{w.type}</p>
+                  <p className="text-xs text-muted-foreground">{w.duration} min · {w.calories} kcal</p>
+                </div>
+                <span className="text-xs text-muted-foreground">{w.date}</span>
               </div>
-              <div className="flex-1">
-                <p className="text-sm font-medium">{w.type}</p>
-                <p className="text-xs text-muted-foreground">{w.duration} min · {w.calories} kcal</p>
-              </div>
-              <span className="text-xs text-muted-foreground">{w.date}</span>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       </div>
 
@@ -265,7 +398,7 @@ export default function FitnessPage() {
               <p className="text-xs text-muted-foreground">Weight</p>
             </div>
             <div className="flex items-baseline gap-1">
-              <p className="text-2xl font-bold">62.4</p>
+              <p className="text-2xl font-bold">{displayWeight}</p>
               <div className="flex gap-1">
                 {UNITS.map(u => (
                   <button
@@ -284,8 +417,10 @@ export default function FitnessPage() {
           </div>
           <div className="bg-muted/50 rounded-xl p-3">
             <p className="text-xs text-muted-foreground mb-1">BMI</p>
-            <p className="text-2xl font-bold">21.4</p>
-            <p className="text-xs text-[var(--vf-green)]">Healthy</p>
+            <p className="text-2xl font-bold">{bmi}</p>
+            {latestMeasurements.weight_kg && (
+              <p className="text-xs text-[var(--vf-green)]">Healthy</p>
+            )}
           </div>
         </div>
       </div>
@@ -363,7 +498,7 @@ export default function FitnessPage() {
             </div>
             <Button
               className="w-full bg-[var(--vf-purple)] hover:bg-[var(--vf-purple)]/90 text-white rounded-xl"
-              onClick={() => setWeightDialogOpen(false)}
+              onClick={saveMeasurements}
               disabled={!wWeight}
             >
               Save Measurements
